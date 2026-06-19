@@ -563,15 +563,26 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
       .full-bleed,
       .section-banner,
       .case-hero {
-        aspect-ratio: 24/8.6 !important;
+        aspect-ratio: 24/8.5 !important;
+      }
+      .cover-banner {
+        aspect-ratio: 24/6 !important;
       }
 
       /*
-       * Make TOC and Cover sections fill the full page height so no empty space shows
+       * Make TOC section fill the full page height so no empty space shows
        */
-      .toc,
+      .toc {
+        min-height: 100vh !important;
+      }
+      
+      /*
+       * Cover: fill page height, content starts from top so image is at top
+       * and dark background fills any remaining space at bottom
+       */
       .cover {
         min-height: 100vh !important;
+        justify-content: flex-start !important;
       }
 
       .case-hero,
@@ -620,150 +631,7 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
       });
     
     
-    // -------
-
-    //   await page.addStyleTag({
-    //     content: `
-    //   * {
-    //     box-sizing: border-box;
-    //   }
-
-    //   img {
-    //     max-width: 100% !important;
-    //   }
-
-    //   h1,
-    //   h2,
-    //   h3,
-    //   h4,
-    //   h5,
-    //   h6 {
-    //     break-after: avoid;
-    //     page-break-after: avoid;
-    //   }
-
-    //   /*
-    //    * Every section starts on a new page
-    //    */
-
-    //   .full-bleed {
-    //     display: none !important;
-    //   }
-    //   section {
-    //     break-before: page;
-    //     page-break-before: always;
-    //   }
-
-    //   /*
-    //    * First section starts normally on Page 1
-    //    */
-    //   section:first-of-type {
-    //     break-before: auto;
-    //     page-break-before: auto;
-    //   }
-
-    //   /*
-    //    * Allow highlight boxes to split naturally
-    //    */
-    //   .highlight-box {
-    //     break-inside: auto !important;
-    //     page-break-inside: auto !important;
-    //   }
-
-    //   @page {
-    //     margin: 0;
-    //   }
-    // `,
-    //   });
-
-    //     await page.addStyleTag({
-    //   content: `
-    //     * {
-    //       box-sizing: border-box;
-    //     }
-
-    //     section {
-    //       break-before: page;
-    //       page-break-before: always;
-    //     }
-
-    //     section:first-of-type {
-    //       break-before: auto;
-    //       page-break-before: auto;
-    //     }
-
-    //     thead {
-    //       display: table-row-group !important;
-    //     }
-
-    //     .highlight-box {
-    //       break-inside: auto !important;
-    //       page-break-inside: auto !important;
-    //     }
-
-    //     img {
-    //       max-width: 100% !important;
-    //     }
-
-    //     @page {
-    //       margin: 0;
-    //     }
-    //   `,
-    // });
-
-  //   await page.addStyleTag({
-  //     content: `
-  //   * {
-  //     box-sizing: border-box;
-  //   }
-
-  //   img,
-  //   svg,
-  //   canvas,
-  //   video {
-  //     max-width: 100% !important;
-  //     height: auto !important;
-  //   }
-
-  //   h1,
-  //   h2,
-  //   h3,
-  //   h4,
-  //   h5,
-  //   h6 {
-  //     break-after: avoid;
-  //     page-break-after: avoid;
-  //   }
-
-  //   /*
-  //    * Every section starts on a new page
-  //    */
-  //   section {
-  //     break-before: page;
-  //     page-break-before: always;
-  //   }
-
-  //   /*
-  //    * First section starts normally on page 1
-  //    */
-  //   section:first-of-type {
-  //     break-before: auto;
-  //     page-break-before: auto;
-  //   }
-
-  //   /*
-  //    * Don't repeat table headers across pages
-  //    */
-  //   thead {
-  //     display: table-row-group !important;
-  //   }
-
-  //   @page {
-  //     margin: 0;
-  //   }
-  // `,
-  //   });
-
+    
     await page.waitForLoadState("networkidle");
     await page.screenshot({
       path: "debug.png",
@@ -780,81 +648,7 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
   return outputPath;
 }
 
-// async function splitBySection(htmlPath, outputDir, sections, options = {}) {
-//   const {
-//     isRTL = false,
-//     language = "en",
-//     landscape = false,
-//     compress = true,
-//   } = options;
-//   if (!sections || sections.length === 0) {
-//     const fallback = path.join(outputDir, `document-full-${language}.pdf`);
-//     await convertHTMLtoPDF(htmlPath, fallback, {
-//       isRTL,
-//       landscape,
-//       compress,
-//     });
-//     return [{ name: `document-full-${language}.pdf`, path: fallback }];
-//   }
 
-//   const htmlContent = fs.readFileSync(htmlPath, "utf-8");
-//   const generatedFiles = [];
-
-//   const browser = await createBrowser();
-//   try {
-//     for (const section of sections) {
-//       const safeName = section.id.replace(/[^a-zA-Z0-9-_]/g, "_");
-//       const outPath = path.join(
-//         outputDir,
-//         `section-${safeName}-${language}.pdf`,
-//       );
-//       const tempPath = path.join(outputDir, `_temp_${safeName}.html`);
-
-//       const isolationCSS = `
-//         [data-section] { display: none !important; }
-//         [data-section="${section.id}"] { display: block !important; }
-//       `;
-//       const modifiedHTML = htmlContent.replace(
-//         "</head>",
-//         `<style>${isolationCSS}</style></head>`,
-//       );
-//       fs.writeFileSync(tempPath, modifiedHTML, "utf-8");
-
-//       const page = await browser.newPage();
-
-//       await page.setViewportSize(VIEWPORT);
-//       try {
-//         await page.goto(`file://${tempPath}`, { waitUntil: "networkidle" });
-
-//         await page.addStyleTag({
-//           content: `
-//             * { box-sizing: border-box; }
-//             img { max-width: 100% !important; page-break-inside: avoid; }
-//             p, h1, h2, h3, h4, h5, h6, li, tr { page-break-inside: avoid; }
-//             section, article, div { page-break-inside: avoid; }
-//           `,
-//         });
-
-//         await page.pdf(getPdfOptions(outPath, compress));
-
-//         generatedFiles.push({
-//           name: `section-${safeName}-${language}.pdf`,
-//           path: outPath,
-//         });
-//         console.log(`✅  section-${safeName}-${language}.pdf`);
-//       } finally {
-//         await page.close();
-//         try {
-//           fs.unlinkSync(tempPath);
-//         } catch { }
-//       }
-//     }
-//   } finally {
-//     await browser.close();
-//   }
-
-//   return generatedFiles;
-// }
 
 async function splitByPageRanges(
   fullPdfPath,
