@@ -491,6 +491,11 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
         box-sizing: border-box;
       }
 
+      body {
+        margin: 0;
+        padding: 0;
+      }
+
       p,
       span,
       div,
@@ -770,7 +775,85 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
       fullPage: true,
     });
 
-    await page.pdf(getPdfOptions(outputPath, compress));
+    // Detect if we have multiple sections to split dynamically
+    const sectionCount = await page.evaluate(() => {
+      return document.querySelectorAll("body > section, body > footer").length;
+    });
+
+    const hasFooter = await page.evaluate(() => {
+      const sections = Array.from(document.querySelectorAll("body > section, body > footer"));
+      if (sections.length < 2) return false;
+      const lastSection = sections[sections.length - 1];
+      const id = lastSection.id || lastSection.getAttribute("data-section") || "";
+      const className = lastSection.className || "";
+      const tagName = lastSection.tagName.toLowerCase();
+      return (
+        id.toLowerCase().includes("footer") || 
+        className.toLowerCase().includes("footer") ||
+        tagName === "footer"
+      );
+    });
+
+    const pdfBuffers = [];
+    const limit = hasFooter ? sectionCount - 1 : sectionCount;
+    console.log(`Debug: sectionCount = ${sectionCount}, hasFooter = ${hasFooter}, limit = ${limit}`);
+
+    if (sectionCount > 0) {
+      for (let idx = 0; idx < limit; idx++) {
+        // Isolate the section and get the layout height
+        const sectionHeight = await page.evaluate(({ index, mergeFooter }) => {
+          const sections = Array.from(document.querySelectorAll("body > section, body > footer"));
+          sections.forEach((sec, i) => {
+            if (i === index || (mergeFooter && index === sections.length - 2 && i === sections.length - 1)) {
+              sec.style.display = ""; // default display
+              if (mergeFooter && index === sections.length - 2 && i === sections.length - 1) {
+                sec.style.setProperty("break-before", "avoid", "important");
+                sec.style.setProperty("page-break-before", "avoid", "important");
+              }
+            } else {
+              sec.style.display = "none";
+            }
+          });
+          return document.documentElement.scrollHeight;
+        }, { index: idx, mergeFooter: hasFooter });
+
+        const pdfBuffer = await page.pdf({
+          ...getPdfOptions(null, compress),
+          height: `${sectionHeight}px`,
+          preferCSSPageSize: false,
+        });
+
+        pdfBuffers.push(pdfBuffer);
+      }
+
+      // Re-enable all sections just in case
+      await page.evaluate(() => {
+        document.querySelectorAll("body > section, body > footer").forEach((sec) => {
+          sec.style.display = "";
+          sec.style.removeProperty("break-before");
+          sec.style.removeProperty("page-break-before");
+        });
+      });
+
+      // Merge sections into one PDF using pdf-lib
+      const { PDFDocument } = require("pdf-lib");
+      const mergedPdf = await PDFDocument.create();
+      for (const buffer of pdfBuffers) {
+        const pdf = await PDFDocument.load(buffer);
+        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+        copiedPages.forEach((p) => mergedPdf.addPage(p));
+      }
+      const mergedPdfBytes = await mergedPdf.save();
+      fs.writeFileSync(outputPath, mergedPdfBytes);
+    } else {
+      // Single continuous page
+      const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+      await page.pdf({
+        ...getPdfOptions(outputPath, compress),
+        height: `${docHeight}px`,
+        preferCSSPageSize: false,
+      });
+    }
 
     console.log(`✅ ${path.basename(outputPath)}`);
   } finally {
@@ -780,81 +863,84 @@ async function convertHTMLtoPDF(htmlPath, outputPath, options = {}) {
   return outputPath;
 }
 
-// async function splitBySection(htmlPath, outputDir, sections, options = {}) {
-//   const {
-//     isRTL = false,
-//     language = "en",
-//     landscape = false,
-//     compress = true,
-//   } = options;
-//   if (!sections || sections.length === 0) {
-//     const fallback = path.join(outputDir, `document-full-${language}.pdf`);
-//     await convertHTMLtoPDF(htmlPath, fallback, {
-//       isRTL,
-//       landscape,
-//       compress,
-//     });
-//     return [{ name: `document-full-${language}.pdf`, path: fallback }];
-//   }
+async function splitBySection(htmlPath, outputDir, sections, options = {}) {
+  const {
+    isRTL = false,
+    language = "en",
+    landscape = false,
+    compress = true,
+  } = options;
 
-//   const htmlContent = fs.readFileSync(htmlPath, "utf-8");
-//   const generatedFiles = [];
+  if (!sections || sections.length === 0) {
+    const fallback = path.join(outputDir, `document-full-${language}.pdf`);
+    await convertHTMLtoPDF(htmlPath, fallback, {
+      isRTL,
+      landscape,
+      compress,
+    });
+    return [{ name: `document-full-${language}.pdf`, path: fallback }];
+  }
 
-//   const browser = await createBrowser();
-//   try {
-//     for (const section of sections) {
-//       const safeName = section.id.replace(/[^a-zA-Z0-9-_]/g, "_");
-//       const outPath = path.join(
-//         outputDir,
-//         `section-${safeName}-${language}.pdf`,
-//       );
-//       const tempPath = path.join(outputDir, `_temp_${safeName}.html`);
+  const generatedFiles = [];
+  const browser = await createBrowser();
 
-//       const isolationCSS = `
-//         [data-section] { display: none !important; }
-//         [data-section="${section.id}"] { display: block !important; }
-//       `;
-//       const modifiedHTML = htmlContent.replace(
-//         "</head>",
-//         `<style>${isolationCSS}</style></head>`,
-//       );
-//       fs.writeFileSync(tempPath, modifiedHTML, "utf-8");
+  try {
+    const page = await browser.newPage();
+    await page.setViewportSize(VIEWPORT);
+    await page.goto(`file://${htmlPath}`, { waitUntil: "networkidle" });
 
-//       const page = await browser.newPage();
+    // Inject styles
+    await page.addStyleTag({
+      content: `
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0; }
+      img { max-width: 100% !important; }
+      `,
+    });
 
-//       await page.setViewportSize(VIEWPORT);
-//       try {
-//         await page.goto(`file://${tempPath}`, { waitUntil: "networkidle" });
+    for (let idx = 0; idx < sections.length; idx++) {
+      const section = sections[idx];
+      const safeName = section.id.replace(/[^a-zA-Z0-9-_]/g, "_");
+      const outPath = path.join(outputDir, `section-${safeName}-${language}.pdf`);
 
-//         await page.addStyleTag({
-//           content: `
-//             * { box-sizing: border-box; }
-//             img { max-width: 100% !important; page-break-inside: avoid; }
-//             p, h1, h2, h3, h4, h5, h6, li, tr { page-break-inside: avoid; }
-//             section, article, div { page-break-inside: avoid; }
-//           `,
-//         });
+      // Isolate the section and get height
+      const sectionHeight = await page.evaluate((secId) => {
+        const targetElement = document.querySelector(`[data-section="${secId}"], #${secId}`);
+        
+        if (targetElement) {
+          const siblings = Array.from(document.querySelectorAll("body > section"));
+          if (siblings.length > 0) {
+            siblings.forEach((sec) => {
+              if (sec === targetElement || sec.contains(targetElement)) {
+                sec.style.display = "";
+              } else {
+                sec.style.display = "none";
+              }
+            });
+          }
+        }
+        
+        return document.documentElement.scrollHeight;
+      }, section.id);
 
-//         await page.pdf(getPdfOptions(outPath, compress));
+      await page.pdf({
+        ...getPdfOptions(outPath, compress),
+        height: `${sectionHeight}px`,
+        preferCSSPageSize: false,
+      });
 
-//         generatedFiles.push({
-//           name: `section-${safeName}-${language}.pdf`,
-//           path: outPath,
-//         });
-//         console.log(`✅  section-${safeName}-${language}.pdf`);
-//       } finally {
-//         await page.close();
-//         try {
-//           fs.unlinkSync(tempPath);
-//         } catch { }
-//       }
-//     }
-//   } finally {
-//     await browser.close();
-//   }
+      generatedFiles.push({
+        name: `section-${safeName}-${language}.pdf`,
+        path: outPath,
+      });
+      console.log(`✅ section-${safeName}-${language}.pdf`);
+    }
+  } finally {
+    await browser.close();
+  }
 
-//   return generatedFiles;
-// }
+  return generatedFiles;
+}
 
 async function splitByPageRanges(
   fullPdfPath,
@@ -901,5 +987,4 @@ async function splitByPageRanges(
   return generatedFiles;
 }
 
-// module.exports = { convertHTMLtoPDF, splitBySection, splitByPageRanges };
-module.exports = { convertHTMLtoPDF, splitByPageRanges };
+module.exports = { convertHTMLtoPDF, splitBySection, splitByPageRanges };
